@@ -16,27 +16,34 @@ public class SlackCommandController {
 
     @PostMapping("/slack/command")
     public ResponseEntity<String> handleCommand(@RequestParam Map<String, String> params) {
-        String command = params.get("command");  // e.g., "/jira"
-        String text = params.get("text");        // e.g., "create"
-        String teamId = params.get("team_id");
-        String userId = params.get("user_id");
+        try {
+            String command = params.get("command");  // e.g., "/jira"
+            String text = params.get("text");        // e.g., "create"
+            String teamId = params.get("team_id");
+            String userId = params.get("user_id");
 
-        // TODO: Verify signing secret
+            // TODO: Verify signing secret
 
-        if (text.startsWith("create")) {
-            String botToken = TokenStore.getToken(teamId);
-            if (botToken == null) {
-                return ResponseEntity.badRequest().body("Bot not authorized. Please install via OAuth first.");
+            if (text.startsWith("create")) {
+                String botToken = TokenStore.getToken(teamId);
+                if (botToken == null) {
+                    return ResponseEntity.ok("Bot not authorized. Please install via OAuth first.");
+                }
+                // Open modal async and return 200 immediately
+                Mono.fromRunnable(() -> openJiraModal(params.get("trigger_id"), botToken))
+                        .subscribe();
+                return ResponseEntity.ok("Opening JIRA ticket form...");
+            } else {
+                return ResponseEntity.ok("Unknown command: " + text);
             }
-            openJiraModal(params.get("trigger_id"), botToken);
-            return ResponseEntity.ok("Opening JIRA ticket form...");
-        } else {
-            return ResponseEntity.ok("Unknown command: " + text);
+        } catch (Exception e) {
+            System.out.println("Error in handleCommand: " + e.getMessage() + " - Params: " + params);
+            return ResponseEntity.ok("Error processing command - check logs"); // Return 200 with error message for Slack
         }
     }
 
     private void openJiraModal(String triggerId, String botToken) {
-        // Modal with fields (adjusted for common JIRA fields)
+        // Modal JSON (same as before)
         String modalPayload = "{ \"type\": \"modal\", \"callback_id\": \"jira_ticket_modal\", \"title\": { \"type\": \"plain_text\", \"text\": \"Create JIRA Ticket\" }, \"submit\": { \"type\": \"plain_text\", \"text\": \"Submit\" }, \"blocks\": [ " +
                 "{ \"type\": \"input\", \"block_id\": \"issue_type_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Issue Type\" }, \"element\": { \"type\": \"static_select\", \"action_id\": \"issue_type\", \"options\": [ { \"text\": { \"type\": \"plain_text\", \"text\": \"Bug\" }, \"value\": \"Bug\" }, { \"text\": { \"type\": \"plain_text\", \"text\": \"Task\" }, \"value\": \"Task\" } ] } }, " +
                 "{ \"type\": \"input\", \"block_id\": \"summary_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Summary\" }, \"element\": { \"type\": \"plain_text_input\", \"action_id\": \"summary\" } }, " +
@@ -54,8 +61,9 @@ public class SlackCommandController {
                 .retrieve()
                 .bodyToMono(String.class)
                 .subscribe(response -> {
-                    // Log response for debugging
                     System.out.println("Modal open response: " + response);
+                }, error -> {
+                    System.out.println("Error opening modal: " + error.getMessage());
                 });
     }
 }

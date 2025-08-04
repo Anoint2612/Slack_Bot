@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 import java.util.Base64;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 @RestController
@@ -33,13 +34,17 @@ public class SlackInteractiveController {
 
     @PostMapping("/slack/interactive")
     public Mono<ResponseEntity<String>> handleInteractive(@RequestBody String payload) {
-        LOGGER.info("Received interactive payload: " + payload);
+        LOGGER.log(Level.INFO, "Received interactive payload (raw): {0}", payload); // Log the full payload for debugging
+
         try {
             JsonNode json = objectMapper.readTree(payload);
-            if (json.has("type") && "view_submission".equals(json.get("type").asText()) && json.has("view") && "jira_ticket_modal".equals(json.get("view").get("callback_id").asText())) {
-                JsonNode values = json.get("view").get("state").get("values");
+            LOGGER.log(Level.INFO, "Parsed JSON type: {0}", json.get("type").asText());
 
-                // Extract fields safely
+            if ("view_submission".equals(json.get("type").asText()) && "jira_ticket_modal".equals(json.get("view").get("callback_id").asText())) {
+                JsonNode values = json.get("view").get("state").get("values");
+                LOGGER.log(Level.INFO, "Extracted values: {0}", values.toString()); // Log values for debugging
+
+                // Extract fields safely with defaults
                 String issueType = getSafeValue(values, "issue_type_block", "issue_type", "Bug");
                 String summary = getSafeValue(values, "summary_block", "summary", "");
                 String description = getSafeValue(values, "description_block", "description", "");
@@ -54,14 +59,14 @@ public class SlackInteractiveController {
                 return createJiraTicket(issueType, summary, description, priority, assignee, labels)
                         .map(url -> ResponseEntity.ok("{\"response_action\": \"update\", \"view\": { \"type\": \"modal\", \"title\": { \"type\": \"plain_text\", \"text\": \"Ticket Created\" }, \"blocks\": [ { \"type\": \"section\", \"text\": { \"type\": \"mrkdwn\", \"text\": \"Your ticket is ready: <" + url + "|View Ticket>\" } } ] }}"))
                         .onErrorResume(e -> {
-                            LOGGER.error("Error: " + e.getMessage(), e);
+                            LOGGER.log(Level.SEVERE, "Error creating ticket: " + e.getMessage(), e);
                             return Mono.just(ResponseEntity.ok("{\"response_action\": \"errors\", \"errors\": { \"summary_block\": \"Failed to create ticket: " + e.getMessage() + "\" }}"));
                         });
             }
             return Mono.just(ResponseEntity.ok("{}"));
         } catch (Exception e) {
-            LOGGER.error("Payload handling error: " + e.getMessage(), e);
-            return Mono.just(ResponseEntity.badRequest().body("Error handling modal"));
+            LOGGER.log(Level.SEVERE, "Error handling interactive payload: " + e.getMessage(), e);
+            return Mono.just(ResponseEntity.badRequest().body("Error handling modal: " + e.getMessage()));
         }
     }
 
@@ -75,7 +80,7 @@ public class SlackInteractiveController {
             if (selected != null) return selected.get("value").asText();
             return action.get("value").asText();
         } catch (Exception e) {
-            LOGGER.warning("Missing field: " + blockId + "/" + actionId);
+            LOGGER.log(Level.WARNING, "Missing field: " + blockId + "/" + actionId, e);
             return defaultValue;
         }
     }
@@ -85,7 +90,7 @@ public class SlackInteractiveController {
 
         String payload = "{ \"fields\": { \"project\": { \"key\": \"" + jiraProjectKey + "\" }, \"issuetype\": { \"name\": \"" + issueType + "\" }, \"summary\": \"" + summary + "\", \"description\": \"" + description + "\", \"priority\": { \"name\": \"" + priority + "\" }, \"assignee\": { \"name\": \"" + assignee + "\" }, \"labels\": [\"" + labels.replace(",", "\", \"") + "\"] } }";
 
-        LOGGER.info("Sending JIRA payload: " + payload);
+        LOGGER.log(Level.INFO, "Sending JIRA payload: " + payload);
 
         return jiraWebClient.post()
                 .uri(jiraBaseUrl + "/rest/api/2/issue")
@@ -95,7 +100,7 @@ public class SlackInteractiveController {
                 .retrieve()
                 .bodyToMono(String.class)
                 .map(response -> {
-                    LOGGER.info("JIRA response: " + response);
+                    LOGGER.log(Level.INFO, "JIRA response: " + response);
                     try {
                         JsonNode json = objectMapper.readTree(response);
                         String key = json.get("key").asText();

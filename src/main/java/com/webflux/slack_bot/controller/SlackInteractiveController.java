@@ -37,14 +37,15 @@ public class SlackInteractiveController {
     @PostMapping("/slack/interactive")
     public Mono<ResponseEntity<String>> handleInteractive(@RequestBody String rawPayload) {
         try {
-            // Decode the URL-encoded payload from Slack (it's sent as form data: payload={json})
+            // Step 1: Decode the URL-encoded raw payload from Slack
             String decodedPayload = URLDecoder.decode(rawPayload, StandardCharsets.UTF_8.name());
-            LOGGER.log(Level.INFO, "Decoded raw payload: {0}", decodedPayload);
+            LOGGER.log(Level.INFO, "Decoded payload: {0}", decodedPayload);
 
-            // Extract the JSON part (remove "payload=" prefix if present)
-            String jsonString = decodedPayload.startsWith("payload=") ? decodedPayload.substring(8) : decodedPayload;
+            // Step 2: Extract the JSON string (remove "payload=" prefix)
+            String jsonString = decodedPayload.replace("payload=", "");
             LOGGER.log(Level.INFO, "Extracted JSON string: {0}", jsonString);
 
+            // Step 3: Parse the JSON
             JsonNode json = objectMapper.readTree(jsonString);
             LOGGER.log(Level.INFO, "Parsed JSON type: {0}", json.get("type").asText());
 

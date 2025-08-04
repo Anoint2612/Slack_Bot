@@ -16,6 +16,7 @@ public class SlackCommandController {
 
     @PostMapping("/slack/command")
     public ResponseEntity<String> handleCommand(@RequestParam Map<String, String> params) {
+        System.out.println("Received command: " + params.get("command") + " with text: " + params.get("text"));
         try {
             String command = params.get("command");  // e.g., "/jira"
             String text = params.get("text");        // e.g., "create"

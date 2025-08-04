@@ -16,9 +16,8 @@ public class SlackCommandController {
 
     @PostMapping("/slack/command")
     public ResponseEntity<String> handleCommand(@RequestParam Map<String, String> params) {
-        System.out.println("Received command: " + params.get("command") + " with text: " + params.get("text"));
         try {
-            String command = params.get("command");  // e.g., "/jira"
+            String command = params.get("command");  // e.g., "/botjira"
             String text = params.get("text");        // e.g., "create"
             String teamId = params.get("team_id");
             String userId = params.get("user_id");
@@ -39,19 +38,26 @@ public class SlackCommandController {
             }
         } catch (Exception e) {
             System.out.println("Error in handleCommand: " + e.getMessage() + " - Params: " + params);
-            return ResponseEntity.ok("Error processing command - check logs"); // Return 200 with error message for Slack
+            return ResponseEntity.ok("Error processing command - check logs"); // Return 200 for Slack
         }
     }
 
     private void openJiraModal(String triggerId, String botToken) {
-        // Modal JSON (same as before)
+        // Modal with EXACT fields from JIRA Cloud for Slack (using Block Kit)
+        // Updated to use external_select for dynamic fields (Parent Epic, Components, Labels)
         String modalPayload = "{ \"type\": \"modal\", \"callback_id\": \"jira_ticket_modal\", \"title\": { \"type\": \"plain_text\", \"text\": \"Create JIRA Ticket\" }, \"submit\": { \"type\": \"plain_text\", \"text\": \"Submit\" }, \"blocks\": [ " +
-                "{ \"type\": \"input\", \"block_id\": \"issue_type_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Issue Type\" }, \"element\": { \"type\": \"static_select\", \"action_id\": \"issue_type\", \"options\": [ { \"text\": { \"type\": \"plain_text\", \"text\": \"Bug\" }, \"value\": \"Bug\" }, { \"text\": { \"type\": \"plain_text\", \"text\": \"Task\" }, \"value\": \"Task\" } ] } }, " +
-                "{ \"type\": \"input\", \"block_id\": \"summary_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Summary\" }, \"element\": { \"type\": \"plain_text_input\", \"action_id\": \"summary\" } }, " +
-                "{ \"type\": \"input\", \"block_id\": \"description_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Description\" }, \"element\": { \"type\": \"plain_text_input\", \"action_id\": \"description\", \"multiline\": true } }, " +
-                "{ \"type\": \"input\", \"block_id\": \"priority_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Priority\" }, \"element\": { \"type\": \"static_select\", \"action_id\": \"priority\", \"options\": [ { \"text\": { \"type\": \"plain_text\", \"text\": \"High\" }, \"value\": \"High\" }, { \"text\": { \"type\": \"plain_text\", \"text\": \"Medium\" }, \"value\": \"Medium\" } ] } }, " +
-                "{ \"type\": \"input\", \"block_id\": \"assignee_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Assignee (email)\" }, \"element\": { \"type\": \"plain_text_input\", \"action_id\": \"assignee\" }, \"optional\": true }, " +
-                "{ \"type\": \"input\", \"block_id\": \"labels_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Labels (comma-separated)\" }, \"element\": { \"type\": \"plain_text_input\", \"action_id\": \"labels\" }, \"optional\": true } " +
+                "{ \"type\": \"section\", \"text\": { \"type\": \"plain_text\", \"text\": \"Issue is being created for jiratesting2612.atlassian.net\" } }, " +
+                "{ \"type\": \"input\", \"block_id\": \"project_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Project\" }, \"element\": { \"type\": \"static_select\", \"action_id\": \"project\", \"placeholder\": { \"type\": \"plain_text\", \"text\": \"Which project would you like to create an issue in?\" }, \"options\": [ { \"text\": { \"type\": \"plain_text\", \"text\": \"Bot Demo Project (BDP)\" }, \"value\": \"BDP\" }, { \"text\": { \"type\": \"plain_text\", \"text\": \"Jira Testing (SCRUM)\" }, \"value\": \"SCRUM\" } ] } }, " + // Customize with your actual projects and keys
+                "{ \"type\": \"input\", \"block_id\": \"issue_type_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Issue type\" }, \"element\": { \"type\": \"static_select\", \"action_id\": \"issue_type\", \"placeholder\": { \"type\": \"plain_text\", \"text\": \"What type of issue is it?\" }, \"options\": [ { \"text\": { \"type\": \"plain_text\", \"text\": \"New Feature\" }, \"value\": \"New Feature\" }, { \"text\": { \"type\": \"plain_text\", \"text\": \"Bug\" }, \"value\": \"Bug\" }, { \"text\": { \"type\": \"plain_text\", \"text\": \"Task\" }, \"value\": \"Task\" } ] } }, " +
+                "{ \"type\": \"input\", \"block_id\": \"summary_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Summary\" }, \"element\": { \"type\": \"plain_text_input\", \"action_id\": \"summary\", \"placeholder\": { \"type\": \"plain_text\", \"text\": \"Write something\" } } }, " +
+                "{ \"type\": \"input\", \"block_id\": \"description_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Description (optional)\" }, \"optional\": true, \"element\": { \"type\": \"plain_text_input\", \"action_id\": \"description\", \"multiline\": true, \"placeholder\": { \"type\": \"plain_text\", \"text\": \"Write something\" } } }, " +
+                "{ \"type\": \"input\", \"block_id\": \"assignee_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Assignee (optional)\" }, \"optional\": true, \"element\": { \"type\": \"users_select\", \"action_id\": \"assignee\", \"placeholder\": { \"type\": \"plain_text\", \"text\": \"Pick an option\" } } }, " +
+                "{ \"type\": \"input\", \"block_id\": \"parent_epic_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Parent Epic (optional)\" }, \"optional\": true, \"element\": { \"type\": \"external_select\", \"action_id\": \"parent_epic\", \"placeholder\": { \"type\": \"plain_text\", \"text\": \"Start typing to search and pick your option\" }, \"min_query_length\": 3 } }, " + // Dynamic: loads from /slack/options/epics
+                "{ \"type\": \"input\", \"block_id\": \"components_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Components (optional)\" }, \"optional\": true, \"element\": { \"type\": \"multi_external_select\", \"action_id\": \"components\", \"placeholder\": { \"type\": \"plain_text\", \"text\": \"Pick your options\" }, \"min_query_length\": 0 } }, " + // Dynamic: loads from /slack/options/components
+                "{ \"type\": \"input\", \"block_id\": \"priority_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Priority (optional)\" }, \"optional\": true, \"element\": { \"type\": \"static_select\", \"action_id\": \"priority\", \"placeholder\": { \"type\": \"plain_text\", \"text\": \"Medium\" }, \"options\": [ { \"text\": { \"type\": \"plain_text\", \"text\": \"Highest\" }, \"value\": \"Highest\" }, { \"text\": { \"type\": \"plain_text\", \"text\": \"High\" }, \"value\": \"High\" }, { \"text\": { \"type\": \"plain_text\", \"text\": \"Medium\" }, \"value\": \"Medium\" }, { \"text\": { \"type\": \"plain_text\", \"text\": \"Low\" }, \"value\": \"Low\" }, { \"text\": { \"type\": \"plain_text\", \"text\": \"Lowest\" }, \"value\": \"Lowest\" } ] } }, " +
+                "{ \"type\": \"input\", \"block_id\": \"labels_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Labels (optional)\" }, \"optional\": true, \"element\": { \"type\": \"multi_external_select\", \"action_id\": \"labels\", \"placeholder\": { \"type\": \"plain_text\", \"text\": \"Pick your options or create a new label\" }, \"min_query_length\": 3 } }, " + // Dynamic: loads from /slack/options/labels; allows creation by typing new
+                "{ \"type\": \"input\", \"block_id\": \"start_date_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Start date (optional)\" }, \"optional\": true, \"element\": { \"type\": \"datepicker\", \"action_id\": \"start_date\", \"placeholder\": { \"type\": \"plain_text\", \"text\": \"Select a date\" } } }, " +
+                "{ \"type\": \"input\", \"block_id\": \"due_date_block\", \"label\": { \"type\": \"plain_text\", \"text\": \"Due date (optional)\" }, \"optional\": true, \"element\": { \"type\": \"datepicker\", \"action_id\": \"due_date\", \"placeholder\": { \"type\": \"plain_text\", \"text\": \"Select a date\" } } } " +
                 "] }";
 
         slackWebClient.post()

@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -33,18 +35,23 @@ public class SlackInteractiveController {
     private String jiraProjectKey;
 
     @PostMapping("/slack/interactive")
-    public Mono<ResponseEntity<String>> handleInteractive(@RequestBody String payload) {
-        LOGGER.log(Level.INFO, "Received interactive payload (raw): {0}", payload); // Log the full payload for debugging
-
+    public Mono<ResponseEntity<String>> handleInteractive(@RequestBody String rawPayload) {
         try {
-            JsonNode json = objectMapper.readTree(payload);
+            // Decode the URL-encoded payload from Slack (it's sent as form data: payload={json})
+            String decodedPayload = URLDecoder.decode(rawPayload, StandardCharsets.UTF_8.name());
+            LOGGER.log(Level.INFO, "Decoded raw payload: {0}", decodedPayload);
+
+            // Extract the JSON part (remove "payload=" prefix if present)
+            String jsonString = decodedPayload.startsWith("payload=") ? decodedPayload.substring(8) : decodedPayload;
+            LOGGER.log(Level.INFO, "Extracted JSON string: {0}", jsonString);
+
+            JsonNode json = objectMapper.readTree(jsonString);
             LOGGER.log(Level.INFO, "Parsed JSON type: {0}", json.get("type").asText());
 
             if ("view_submission".equals(json.get("type").asText()) && "jira_ticket_modal".equals(json.get("view").get("callback_id").asText())) {
                 JsonNode values = json.get("view").get("state").get("values");
-                LOGGER.log(Level.INFO, "Extracted values: {0}", values.toString()); // Log values for debugging
+                LOGGER.log(Level.INFO, "Extracted values: {0}", values.toString());
 
-                // Extract fields safely with defaults
                 String issueType = getSafeValue(values, "issue_type_block", "issue_type", "Bug");
                 String summary = getSafeValue(values, "summary_block", "summary", "");
                 String description = getSafeValue(values, "description_block", "description", "");
@@ -86,7 +93,7 @@ public class SlackInteractiveController {
     }
 
     private Mono<String> createJiraTicket(String issueType, String summary, String description, String priority, String assignee, String labels) {
-        String auth = Base64.getEncoder().encodeToString((jiraEmail + ":" + jiraApiToken).getBytes());
+        String auth = Base64.getEncoder().encodeToString((jiraEmail + ":" + jiraApiToken).getBytes(StandardCharsets.UTF_8));
 
         String payload = "{ \"fields\": { \"project\": { \"key\": \"" + jiraProjectKey + "\" }, \"issuetype\": { \"name\": \"" + issueType + "\" }, \"summary\": \"" + summary + "\", \"description\": \"" + description + "\", \"priority\": { \"name\": \"" + priority + "\" }, \"assignee\": { \"name\": \"" + assignee + "\" }, \"labels\": [\"" + labels.replace(",", "\", \"") + "\"] } }";
 

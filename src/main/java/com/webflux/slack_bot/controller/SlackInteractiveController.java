@@ -96,7 +96,19 @@ public class SlackInteractiveController {
     private Mono<String> createJiraTicket(String issueType, String summary, String description, String priority, String assignee, String labels) {
         String auth = Base64.getEncoder().encodeToString((jiraEmail + ":" + jiraApiToken).getBytes(StandardCharsets.UTF_8));
 
-        String payload = "{ \"fields\": { \"project\": { \"key\": \"" + jiraProjectKey + "\" }, \"issuetype\": { \"name\": \"" + issueType + "\" }, \"summary\": \"" + summary + "\", \"description\": \"" + description + "\", \"priority\": { \"name\": \"" + priority + "\" }, \"assignee\": { \"name\": \"" + assignee + "\" }, \"labels\": [\"" + labels.replace(",", "\", \"") + "\"] } }";
+        // Minimal payload matching your successful curl (add optional fields)
+        String payload = "{ \"fields\": { \"project\": { \"key\": \"" + jiraProjectKey + "\" }, \"summary\": \"" + summary + "\", \"description\": \"" + description + "\", \"issuetype\": { \"name\": \"" + issueType + "\" } } }";
+
+        // Add optional fields if provided (to make it more complete)
+        if (!priority.isEmpty()) {
+            payload = payload.replace(" } } }", ", \"priority\": { \"name\": \"" + priority + "\" } } }");
+        }
+        if (!assignee.isEmpty()) {
+            payload = payload.replace(" } } }", ", \"assignee\": { \"name\": \"" + assignee + "\" } } }");
+        }
+        if (!labels.isEmpty()) {
+            payload = payload.replace(" } } }", ", \"labels\": [\"" + labels.replace(",", "\", \"") + "\"] } } }");
+        }
 
         LOGGER.log(Level.INFO, "Sending JIRA payload: " + payload);
 

@@ -45,15 +45,16 @@ public class SlackInteractiveController {
             String decodedPayload = URLDecoder.decode(rawPayload, StandardCharsets.UTF_8.name());
             LOGGER.log(Level.INFO, "Decoded payload: {0}", decodedPayload);
 
-            // Step 2: Extract the JSON string (remove "payload=" prefix)
-            String jsonString = decodedPayload.replace("payload=", "");
+            // Step 2: Extract the JSON string (remove "payload=" prefix if present)
+            String jsonString = decodedPayload.startsWith("payload=") ? decodedPayload.substring(8) : decodedPayload;
             LOGGER.log(Level.INFO, "Extracted JSON string: {0}", jsonString);
 
             // Step 3: Parse the JSON
             JsonNode json = objectMapper.readTree(jsonString);
-            LOGGER.log(Level.INFO, "Parsed JSON type: {0}", json.get("type").asText());
+            String type = json.get("type").asText();
+            LOGGER.log(Level.INFO, "Parsed JSON type: {0}", type);
 
-            if ("view_submission".equals(json.get("type").asText()) && "jira_ticket_modal".equals(json.get("view").get("callback_id").asText())) {
+            if ("view_submission".equals(type) && "jira_ticket_modal".equals(json.get("view").get("callback_id").asText())) {
                 JsonNode values = json.get("view").get("state").get("values");
                 LOGGER.log(Level.INFO, "Extracted values: {0}", values.toString());
 
@@ -102,7 +103,41 @@ public class SlackInteractiveController {
                                     LOGGER.log(Level.SEVERE, "Error creating ticket: " + e.getMessage(), e);
                                     return Mono.just(ResponseEntity.ok("{\"response_action\": \"errors\", \"errors\": { \"summary_block\": \"Failed to create ticket: " + e.getMessage() + "\" }}"));
                                 }));
+            } else if ("block_suggestion".equals(type)) {
+                // Handle options loading for external_select
+                String actionId = json.get("action_id").asText();
+                String query = json.get("value").asText(); // User's typed query
+                LOGGER.log(Level.INFO, "Handling block_suggestion for action_id: {0}, query: {1}", new Object[]{actionId, query});
+
+                Mono<List<Option>> optionsMono;
+                switch (actionId) {
+                    case "team":
+                        optionsMono = searchJiraTeams(query);
+                        break;
+                    case "parent_epic":
+                        optionsMono = searchJira("issuetype = Epic AND summary ~ \"" + query + "\" ORDER BY created DESC");
+                        break;
+                    case "components":
+                        // TODO: Dynamically use projectKey from modal context if available (json may have view.state.values)
+                        optionsMono = getJiraComponents(fallbackProjectKey);
+                        break;
+                    case "labels":
+                        optionsMono = searchJiraLabels(query);
+                        break;
+                    default:
+                        LOGGER.log(Level.WARNING, "Unknown action_id: {0}", actionId);
+                        optionsMono = Mono.just(new ArrayList<>());
+                }
+
+                return optionsMono.map(options -> {
+                    String optionsJson = options.stream()
+                            .map(opt -> "{\"text\": {\"type\": \"plain_text\", \"text\": \"" + opt.label + "\"}, \"value\": \"" + opt.value + "\"}")
+                            .collect(Collectors.joining(", "));
+                    return "{\"options\": [" + optionsJson + "]}";
+                }).map(ResponseEntity::ok);
             }
+
+            // Fallback for unhandled types
             return Mono.just(ResponseEntity.ok("{}"));
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error handling interactive payload: " + e.getMessage(), e);
@@ -127,6 +162,11 @@ public class SlackInteractiveController {
                 return action.get("selected_date").asText();
             } else if (action.has("selected_user")) {  // For users_select
                 return action.get("selected_user").asText();
+            } else if (action.has("selected_options")) {  // For multi_select (e.g., labels, components)
+                JsonNode selectedOptions = action.get("selected_options");
+                if (selectedOptions != null && selectedOptions.isArray()) {
+                    return selectedOptions.findValuesAsText("value").stream().collect(Collectors.joining(","));
+                }
             }
             return defaultValue;
         } catch (Exception e) {
@@ -274,5 +314,128 @@ public class SlackInteractiveController {
                         throw new RuntimeException("Parse error: " + e.getMessage() + " - Response: " + response);
                     }
                 });
+    }
+
+    private Mono<List<Option>> searchJira(String jql) {
+        String auth = Base64.getEncoder().encodeToString((jiraEmail + ":" + jiraApiToken).getBytes(StandardCharsets.UTF_8));
+        String payload = "{\"jql\": \"" + jql + "\", \"maxResults\": 10, \"fields\": [\"key\", \"summary\"]}";
+
+        return jiraWebClient.post()
+                .uri(jiraBaseUrl + "/rest/api/3/search")
+                .header("Authorization", "Basic " + auth)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(payload)
+                .retrieve()
+                .bodyToMono(String.class)
+                .map(response -> {
+                    List<Option> options = new ArrayList<>();
+                    try {
+                        JsonNode json = objectMapper.readTree(response);
+                        JsonNode issues = json.get("issues");
+                        for (JsonNode issue : issues) {
+                            String key = issue.get("key").asText();
+                            String summary = issue.get("fields").get("summary").asText();
+                            options.add(new Option(summary + " (" + key + ")", key));
+                        }
+                    } catch (Exception e) {
+                        LOGGER.log(Level.WARNING, "Error parsing Jira search: " + e.getMessage());
+                    }
+                    return options;
+                });
+    }
+
+    private Mono<List<Option>> getJiraComponents(String projectKey) {
+        String auth = Base64.getEncoder().encodeToString((jiraEmail + ":" + jiraApiToken).getBytes(StandardCharsets.UTF_8));
+
+        return jiraWebClient.get()
+                .uri(jiraBaseUrl + "/rest/api/3/project/" + projectKey + "/components")
+                .header("Authorization", "Basic " + auth)
+                .retrieve()
+                .bodyToMono(String.class)
+                .map(response -> {
+                    List<Option> options = new ArrayList<>();
+                    try {
+                        JsonNode json = objectMapper.readTree(response);
+                        for (JsonNode comp : json) {
+                            String name = comp.get("name").asText();
+                            options.add(new Option(name, name));
+                        }
+                    } catch (Exception e) {
+                        LOGGER.log(Level.WARNING, "Error parsing Jira components: " + e.getMessage());
+                    }
+                    return options;
+                });
+    }
+
+    private Mono<List<Option>> searchJiraLabels(String query) {
+        // Note: Jira doesn't have a direct /label/search; simulate by searching issues or use a fixed list. Customize as needed.
+        List<Option> options = new ArrayList<>();
+        options.add(new Option(query, query)); // Allow creation by returning the query as a new option
+        return Mono.just(options);
+    }
+
+    private Mono<List<Option>> searchJiraTeams(String query) {
+        String auth = Base64.getEncoder().encodeToString((jiraEmail + ":" + jiraApiToken).getBytes(StandardCharsets.UTF_8));
+        // IMPROVED: Fetch up to 100 recent issues with teams (decoupled from query for reliability)
+        String jql = "Team IS NOT EMPTY ORDER BY created DESC";
+        String payload = "{\"jql\": \"" + jql + "\", \"maxResults\": 100, \"fields\": [\"customfield_10001\"]}"; // Increase maxResults if you have many teams
+
+        return jiraWebClient.post()
+                .uri(jiraBaseUrl + "/rest/api/3/search")
+                .header("Authorization", "Basic " + auth)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(payload)
+                .retrieve()
+                .bodyToMono(String.class)
+                .map(response -> {
+                    Set<Option> uniqueOptions = new HashSet<>();
+                    try {
+                        JsonNode json = objectMapper.readTree(response);
+                        JsonNode issues = json.get("issues");
+                        if (issues != null && issues.isArray()) {
+                            for (JsonNode issue : issues) {
+                                JsonNode teamField = issue.get("fields").get("customfield_10001");
+                                if (teamField != null && teamField.has("id") && teamField.has("name")) {
+                                    String id = teamField.get("id").asText();
+                                    String name = teamField.get("name").asText();
+                                    uniqueOptions.add(new Option(name, id));
+                                }
+                            }
+                        }
+                        LOGGER.log(Level.INFO, "Loaded {0} unique teams from Jira", uniqueOptions.size());
+                    } catch (Exception e) {
+                        LOGGER.log(Level.WARNING, "Error parsing Jira teams: " + e.getMessage());
+                    }
+                    // Filter locally by query (case-insensitive) and sort
+                    String lowerQuery = query.toLowerCase();
+                    return uniqueOptions.stream()
+                            .filter(opt -> opt.label.toLowerCase().contains(lowerQuery))
+                            .sorted(Comparator.comparing(opt -> opt.label))
+                            .limit(50) // Slack recommends <=100 options
+                            .collect(Collectors.toList());
+                });
+    }
+
+    private static class Option {
+        String label;
+        String value;
+
+        Option(String label, String value) {
+            this.label = label;
+            this.value = value;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            Option option = (Option) o;
+            return value.equals(option.value);
+        }
+
+        @Override
+        public int hashCode() {
+            return value.hashCode();
+        }
     }
 }

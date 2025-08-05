@@ -186,17 +186,20 @@ public class SlackInteractiveController {
                                           String parentEpic, List<String> components, List<String> labels, String startDate, String dueDate) {
         String auth = Base64.getEncoder().encodeToString((jiraEmail + ":" + jiraApiToken).getBytes(StandardCharsets.UTF_8));
 
+        // Build description in Atlassian Document Format (ADF) to match working curl
+        String descriptionADF = "{ \"type\": \"doc\", \"version\": 1, \"content\": [ { \"type\": \"paragraph\", \"content\": [ { \"text\": \"" + description.replace("\"", "\\\"") + "\", \"type\": \"text\" } ] } ] }";
+
         // Build payload dynamically
-        StringBuilder fields = new StringBuilder("{ \"fields\": { \"project\": { \"key\": \"" + projectKey + "\" }, \"summary\": \"" + summary + "\", \"description\": \"" + description + "\", \"issuetype\": { \"name\": \"" + issueType + "\" }");
+        StringBuilder fields = new StringBuilder("{ \"fields\": { \"project\": { \"key\": \"" + projectKey + "\" }, \"summary\": \"" + summary.replace("\"", "\\\"") + "\", \"description\": " + descriptionADF + ", \"issuetype\": { \"name\": \"" + issueType + "\" }");
         if (!priority.isEmpty()) fields.append(", \"priority\": { \"name\": \"" + priority + "\" }");
         if (!assigneeAccountId.isEmpty()) fields.append(", \"assignee\": { \"accountId\": \"" + assigneeAccountId + "\" }");
         if (!parentEpic.isEmpty()) fields.append(", \"parent\": { \"key\": \"" + parentEpic + "\" }");
         if (!components.isEmpty()) {
-            String compArray = components.stream().map(c -> "{\"name\": \"" + c + "\"}").collect(Collectors.joining(", "));
+            String compArray = components.stream().map(c -> "{\"name\": \"" + c.replace("\"", "\\\"") + "\"}").collect(Collectors.joining(", "));
             fields.append(", \"components\": [" + compArray + "]");
         }
         if (!labels.isEmpty()) {
-            String labelArray = labels.stream().map(l -> "\"" + l + "\"").collect(Collectors.joining(", "));
+            String labelArray = labels.stream().map(l -> "\"" + l.replace("\"", "\\\"") + "\"").collect(Collectors.joining(", "));
             fields.append(", \"labels\": [" + labelArray + "]");
         }
         if (!startDate.isEmpty()) fields.append(", \"customfield_10015\": \"" + startDate + "\""); // REPLACE with actual custom field ID for Start Date

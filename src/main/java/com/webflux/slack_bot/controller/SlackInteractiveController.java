@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.webflux.slack_bot.util.TokenStore;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -13,9 +14,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.List;
+import java.util.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -135,7 +134,7 @@ public class SlackInteractiveController {
         }
     }
 
-    // NEW: Wrapper for assignee extraction (uses getSafeValue under the hood)
+    // Wrapper for assignee extraction (uses getSafeValue under the hood)
     private String getSafeSlackUserId(JsonNode values, String blockId, String actionId) {
         return getSafeValue(values, blockId, actionId, "", true);
     }
@@ -212,35 +211,56 @@ public class SlackInteractiveController {
                                           String parentEpic, List<String> components, List<String> labels, String startDate, String dueDate) {
         String auth = Base64.getEncoder().encodeToString((jiraEmail + ":" + jiraApiToken).getBytes(StandardCharsets.UTF_8));
 
-        // Build description in Atlassian Document Format (ADF) to match working curl
-        String descriptionADF = "{ \"type\": \"doc\", \"version\": 1, \"content\": [ { \"type\": \"paragraph\", \"content\": [ { \"text\": \"" + description.replace("\"", "\\\"") + "\", \"type\": \"text\" } ] } ] }";
+        // Build payload as JSON object to avoid string concatenation errors
+        Map<String, Object> fields = new HashMap<>();
+        fields.put("project", Map.of("key", projectKey));
+        fields.put("summary", summary);
+        fields.put("issuetype", Map.of("name", issueType));
 
-        // Build payload dynamically
-        StringBuilder fields = new StringBuilder("{ \"fields\": { \"project\": { \"key\": \"" + projectKey + "\" }, \"summary\": \"" + summary.replace("\"", "\\\"") + "\", \"description\": " + descriptionADF + ", \"issuetype\": { \"name\": \"" + issueType + "\" }");
-        if (!priority.isEmpty()) fields.append(", \"priority\": { \"name\": \"" + priority + "\" }");
-        if (!assigneeAccountId.isEmpty()) fields.append(", \"assignee\": { \"accountId\": \"" + assigneeAccountId + "\" }");
-        if (!parentEpic.isEmpty()) fields.append(", \"parent\": { \"key\": \"" + parentEpic + "\" }");
-        if (!components.isEmpty()) {
-            String compArray = components.stream().map(c -> "{\"name\": \"" + c.replace("\"", "\\\"") + "\"}").collect(Collectors.joining(", "));
-            fields.append(", \"components\": [" + compArray + "]");
-        }
-        if (!labels.isEmpty()) {
-            String labelArray = labels.stream().map(l -> "\"" + l.replace("\"", "\\\"") + "\"").collect(Collectors.joining(", "));
-            fields.append(", \"labels\": [" + labelArray + "]");
-        }
-        if (!startDate.isEmpty()) fields.append(", \"customfield_10015\": \"" + startDate + "\""); // REPLACE with actual custom field ID for Start Date
-        if (!dueDate.isEmpty()) fields.append(", \"duedate\": \"" + dueDate + "\""); // Standard due date field
-        fields.append(" } }");
+        // ADF for description
+        Map<String, Object> descriptionADF = Map.of(
+                "type", "doc",
+                "version", 1,
+                "content", List.of(
+                        Map.of(
+                                "type", "paragraph",
+                                "content", List.of(
+                                        Map.of("text", description, "type", "text")
+                                )
+                        )
+                )
+        );
+        fields.put("description", descriptionADF);
 
-        String payload = fields.toString();
+        if (!priority.isEmpty()) fields.put("priority", Map.of("name", priority));
+        if (!assigneeAccountId.isEmpty()) fields.put("assignee", Map.of("accountId", assigneeAccountId));
+        if (!parentEpic.isEmpty()) fields.put("parent", Map.of("key", parentEpic));
+        if (!components.isEmpty()) fields.put("components", components.stream().map(c -> Map.of("name", c)).collect(Collectors.toList()));
+        if (!labels.isEmpty()) fields.put("labels", labels);
+        if (!startDate.isEmpty()) fields.put("customfield_10015", startDate); // REPLACE with actual ID
+        if (!dueDate.isEmpty()) fields.put("duedate", dueDate);
+
+        Map<String, Object> payloadMap = Map.of("fields", fields);
+        String payload;
+        try {
+            payload = objectMapper.writeValueAsString(payloadMap);
+        } catch (Exception e) {
+            LOGGER.log(Level.SEVERE, "Error building JSON payload: " + e.getMessage(), e);
+            return Mono.error(new RuntimeException("Payload build error: " + e.getMessage()));
+        }
         LOGGER.log(Level.INFO, "Sending JIRA payload: " + payload);
 
         return jiraWebClient.post()
-                .uri(jiraBaseUrl + "/rest/api/3/issue") // Use /3 for Jira Cloud
+                .uri(jiraBaseUrl + "/rest/api/3/issue")
                 .header("Authorization", "Basic " + auth)
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(payload)
                 .retrieve()
+                .onStatus(HttpStatus::is4xxClientError, response -> response.bodyToMono(String.class)
+                        .flatMap(errorBody -> {
+                            LOGGER.log(Level.SEVERE, "Jira 400 error response: " + errorBody);
+                            return Mono.error(new RuntimeException("Jira API error: " + errorBody));
+                        }))
                 .bodyToMono(String.class)
                 .map(response -> {
                     LOGGER.log(Level.INFO, "JIRA response: " + response);
@@ -251,7 +271,6 @@ public class SlackInteractiveController {
                     } catch (Exception e) {
                         throw new RuntimeException("Parse error: " + e.getMessage() + " - Response: " + response);
                     }
-                })
-                .onErrorResume(e -> Mono.error(new RuntimeException("Jira API error: " + e.getMessage())));
+                });
     }
 }

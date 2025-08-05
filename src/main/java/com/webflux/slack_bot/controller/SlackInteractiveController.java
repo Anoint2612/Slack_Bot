@@ -70,6 +70,7 @@ public class SlackInteractiveController {
                 List<String> labels = List.of(labelsInput.split(",")).stream().map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toList());
                 String startDate = getSafeValue(values, "start_date_block", "start_date", "", true);
                 String dueDate = getSafeValue(values, "due_date_block", "due_date", "", true);
+                String team = getSafeValue(values, "team_block", "team", "", true); // Extract selected team ID
 
                 if (projectKey.isEmpty() || summary.isEmpty()) {
                     String errorMsg = projectKey.isEmpty() ? "{\"response_action\": \"errors\", \"errors\": { \"project_block\": \"Project is required\" }}" : "{\"response_action\": \"errors\", \"errors\": { \"summary_block\": \"Summary is required\" }}";
@@ -95,7 +96,7 @@ public class SlackInteractiveController {
                         });
 
                 return assigneeAccountIdMono.flatMap(assigneeAccountId ->
-                        createJiraTicket(projectKey, issueType, summary, description, priority, assigneeAccountId, parentEpic, components, labels, startDate, dueDate)
+                        createJiraTicket(projectKey, issueType, summary, description, priority, assigneeAccountId, parentEpic, components, labels, startDate, dueDate, team) // Pass team
                                 .map(url -> ResponseEntity.ok("{\"response_action\": \"update\", \"view\": { \"type\": \"modal\", \"title\": { \"type\": \"plain_text\", \"text\": \"Ticket Created\" }, \"blocks\": [ { \"type\": \"section\", \"text\": { \"type\": \"mrkdwn\", \"text\": \"Your ticket is ready: <" + url + "|View Ticket>\" } } ] }}"))
                                 .onErrorResume(e -> {
                                     LOGGER.log(Level.SEVERE, "Error creating ticket: " + e.getMessage(), e);
@@ -208,7 +209,7 @@ public class SlackInteractiveController {
     }
 
     private Mono<String> createJiraTicket(String projectKey, String issueType, String summary, String description, String priority, String assigneeAccountId,
-                                          String parentEpic, List<String> components, List<String> labels, String startDate, String dueDate) {
+                                          String parentEpic, List<String> components, List<String> labels, String startDate, String dueDate, String team) { // Added team param for team assignment
         String auth = Base64.getEncoder().encodeToString((jiraEmail + ":" + jiraApiToken).getBytes(StandardCharsets.UTF_8));
 
         // Build payload as JSON object to avoid string concatenation errors
@@ -239,6 +240,7 @@ public class SlackInteractiveController {
         if (!labels.isEmpty()) fields.put("labels", labels);
         if (!startDate.isEmpty()) fields.put("customfield_10015", startDate); // REPLACE with actual ID
         if (!dueDate.isEmpty()) fields.put("duedate", dueDate);
+        if (!team.isEmpty()) fields.put("customfield_10001", team); // Assign the selected team ID
 
         Map<String, Object> payloadMap = Map.of("fields", fields);
         String payload;

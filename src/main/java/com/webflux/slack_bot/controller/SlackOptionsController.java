@@ -70,6 +70,11 @@ public class SlackOptionsController {
         return handleOptions(payload, query -> searchJiraLabels(query));
     }
 
+    @PostMapping("/slack/options/teams") // NEW: Endpoint for dynamic team loading
+    public Mono<ResponseEntity<String>> loadTeams(@RequestBody String payload) {
+        return handleOptions(payload, query -> searchJiraTeams(query));
+    }
+
     private Mono<List<Option>> searchJira(String jql) {
         String auth = Base64.getEncoder().encodeToString((jiraEmail + ":" + jiraApiToken).getBytes(StandardCharsets.UTF_8));
         String payload = "{\"jql\": \"" + jql + "\", \"maxResults\": 10, \"fields\": [\"key\", \"summary\"]}";
@@ -122,11 +127,39 @@ public class SlackOptionsController {
     }
 
     private Mono<List<Option>> searchJiraLabels(String query) {
+        // Note: Jira doesn't have a direct /label/search; simulate by searching issues or use a fixed list. Customize as needed.
         // For now, returning mock/dynamic based on query (e.g., query Jira issues for labels).
         List<Option> options = new ArrayList<>();
         // Example: Fetch from /rest/api/3/label (but it's not search-enabled; implement actual logic)
         options.add(new Option(query, query)); // Allow creation by returning the query as a new option
         return Mono.just(options);
+    }
+
+    private Mono<List<Option>> searchJiraTeams(String query) { // NEW: Search for teams in Jira
+        String auth = Base64.getEncoder().encodeToString((jiraEmail + ":" + jiraApiToken).getBytes(StandardCharsets.UTF_8));
+
+        return jiraWebClient.get()
+                .uri(jiraBaseUrl + "/rest/teams/1.0/teams?query=" + query) // Search teams by query
+                .header("Authorization", "Basic " + auth)
+                .retrieve()
+                .bodyToMono(String.class)
+                .map(response -> {
+                    List<Option> options = new ArrayList<>();
+                    try {
+                        JsonNode json = objectMapper.readTree(response);
+                        JsonNode teams = json.get("teams");
+                        if (teams != null && teams.isArray()) {
+                            for (JsonNode t : teams) {
+                                String id = t.get("id").asText();
+                                String name = t.get("name").asText();
+                                options.add(new Option(name, id));
+                            }
+                        }
+                    } catch (Exception e) {
+                        LOGGER.log(Level.WARNING, "Error parsing Jira teams: " + e.getMessage());
+                    }
+                    return options;
+                });
     }
 
     private static class Option {

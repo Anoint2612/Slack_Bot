@@ -64,13 +64,13 @@ public class SlackInteractiveController {
                 String summary = getSafeValue(values, "summary_block", "summary", "", false);
                 String description = getSafeValue(values, "description_block", "description", "", true);
                 String priority = getSafeValue(values, "priority_block", "priority", "Medium", true);
-                String assigneeUserId = getSafeValue(values, "assignee_block", "assignee", "", true); // Slack User ID
+                String assigneeUserId = getSafeSlackUserId(values, "assignee_block", "assignee"); // Specific extraction for users_select
                 String parentEpic = getSafeValue(values, "parent_epic_block", "parent_epic", "", true);
                 List<String> components = getSafeListValue(values, "components_block", "components");
-                String labelsInput = getSafeValue(values, "labels_block", "labels", "", true); // Comma-separated or selected
+                String labelsInput = getSafeValue(values, "labels_block", "labels", "", true);
                 List<String> labels = List.of(labelsInput.split(",")).stream().map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toList());
-                String startDate = getSafeValue(values, "start_date_block", "start_date", "", true); // YYYY-MM-DD
-                String dueDate = getSafeValue(values, "due_date_block", "due_date", "", true); // YYYY-MM-DD
+                String startDate = getSafeValue(values, "start_date_block", "start_date", "", true);
+                String dueDate = getSafeValue(values, "due_date_block", "due_date", "", true);
 
                 if (projectKey.isEmpty() || summary.isEmpty()) {
                     String errorMsg = projectKey.isEmpty() ? "{\"response_action\": \"errors\", \"errors\": { \"project_block\": \"Project is required\" }}" : "{\"response_action\": \"errors\", \"errors\": { \"summary_block\": \"Summary is required\" }}";
@@ -78,7 +78,22 @@ public class SlackInteractiveController {
                 }
 
                 // Map assignee Slack User ID to Jira accountId (async)
-                Mono<String> assigneeAccountIdMono = assigneeUserId.isEmpty() ? Mono.just("") : getSlackUserEmail(teamId, assigneeUserId).flatMap(email -> getJiraAccountIdByEmail(email));
+                Mono<String> assigneeAccountIdMono = (assigneeUserId == null || assigneeUserId.isEmpty())
+                        ? Mono.just("")
+                        : getSlackUserEmail(teamId, assigneeUserId)
+                        .flatMap(email -> {
+                            if (email.isEmpty()) {
+                                LOGGER.log(Level.WARNING, "No email found for Slack user: " + assigneeUserId);
+                                return Mono.just("");
+                            }
+                            return getJiraAccountIdByEmail(email)
+                                    .map(accountId -> {
+                                        if (accountId.isEmpty()) {
+                                            LOGGER.log(Level.WARNING, "No Jira account found for email: " + email);
+                                        }
+                                        return accountId;
+                                    });
+                        });
 
                 return assigneeAccountIdMono.flatMap(assigneeAccountId ->
                         createJiraTicket(projectKey, issueType, summary, description, priority, assigneeAccountId, parentEpic, components, labels, startDate, dueDate)
@@ -95,23 +110,34 @@ public class SlackInteractiveController {
         }
     }
 
+    // Updated to handle different element types (e.g., selected_user for users_select)
     private String getSafeValue(JsonNode values, String blockId, String actionId, String defaultValue, boolean isOptional) {
         try {
             JsonNode block = values.get(blockId);
             if (block == null) return defaultValue;
             JsonNode action = block.get(actionId);
             if (action == null) return defaultValue;
-            JsonNode selectedOption = action.get("selected_option");
-            if (selectedOption != null) return selectedOption.get("value").asText();
-            JsonNode valueNode = action.get("value");
-            if (valueNode != null) return valueNode.asText();
-            JsonNode selectedDate = action.get("selected_date");
-            if (selectedDate != null) return selectedDate.asText(); // For datepicker
+
+            // Handle different structures
+            if (action.has("selected_option")) {
+                return action.get("selected_option").get("value").asText();
+            } else if (action.has("value")) {
+                return action.get("value").asText();
+            } else if (action.has("selected_date")) {
+                return action.get("selected_date").asText();
+            } else if (action.has("selected_user")) {  // For users_select
+                return action.get("selected_user").asText();
+            }
             return defaultValue;
         } catch (Exception e) {
             if (!isOptional) LOGGER.log(Level.WARNING, "Missing required field: " + blockId + "/" + actionId, e);
             return defaultValue;
         }
+    }
+
+    // NEW: Wrapper for assignee extraction (uses getSafeValue under the hood)
+    private String getSafeSlackUserId(JsonNode values, String blockId, String actionId) {
+        return getSafeValue(values, blockId, actionId, "", true);
     }
 
     private List<String> getSafeListValue(JsonNode values, String blockId, String actionId) {

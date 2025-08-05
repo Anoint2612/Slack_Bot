@@ -14,7 +14,9 @@ import reactor.core.publisher.Mono;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -70,7 +72,7 @@ public class SlackOptionsController {
         return handleOptions(payload, query -> searchJiraLabels(query));
     }
 
-    @PostMapping("/slack/options/teams") // NEW: Endpoint for dynamic team loading
+    @PostMapping("/slack/options/teams")
     public Mono<ResponseEntity<String>> loadTeams(@RequestBody String payload) {
         return handleOptions(payload, query -> searchJiraTeams(query));
     }
@@ -128,37 +130,46 @@ public class SlackOptionsController {
 
     private Mono<List<Option>> searchJiraLabels(String query) {
         // Note: Jira doesn't have a direct /label/search; simulate by searching issues or use a fixed list. Customize as needed.
-        // For now, returning mock/dynamic based on query (e.g., query Jira issues for labels).
         List<Option> options = new ArrayList<>();
         // Example: Fetch from /rest/api/3/label (but it's not search-enabled; implement actual logic)
         options.add(new Option(query, query)); // Allow creation by returning the query as a new option
         return Mono.just(options);
     }
 
-    private Mono<List<Option>> searchJiraTeams(String query) { // NEW: Search for teams in Jira
+    private Mono<List<Option>> searchJiraTeams(String query) {
         String auth = Base64.getEncoder().encodeToString((jiraEmail + ":" + jiraApiToken).getBytes(StandardCharsets.UTF_8));
 
-        return jiraWebClient.get()
-                .uri(jiraBaseUrl + "/rest/teams/1.0/teams?query=" + query) // Search teams by query
+        // Fallback: Search issues with teams assigned and extract unique team name/ID from customfield_10001
+        String jql = "Team IS NOT EMPTY AND (summary ~ \\\"" + query + "\\\" OR key ~ \\\"" + query + "\\\") ORDER BY created DESC";
+        String payload = "{\"jql\": \"" + jql + "\", \"maxResults\": 20, \"fields\": [\"customfield_10001\"]}";
+
+        return jiraWebClient.post()
+                .uri(jiraBaseUrl + "/rest/api/3/search")
                 .header("Authorization", "Basic " + auth)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(payload)
                 .retrieve()
                 .bodyToMono(String.class)
                 .map(response -> {
-                    List<Option> options = new ArrayList<>();
+                    Set<Option> options = new HashSet<>(); // Use Set to avoid duplicates
                     try {
                         JsonNode json = objectMapper.readTree(response);
-                        JsonNode teams = json.get("teams");
-                        if (teams != null && teams.isArray()) {
-                            for (JsonNode t : teams) {
-                                String id = t.get("id").asText();
-                                String name = t.get("name").asText();
-                                options.add(new Option(name, id));
+                        JsonNode issues = json.get("issues");
+                        if (issues != null && issues.isArray()) {
+                            for (JsonNode issue : issues) {
+                                JsonNode teamField = issue.get("fields").get("customfield_10001");
+                                if (teamField != null && teamField.has("id") && teamField.has("name")) {
+                                    String id = teamField.get("id").asText();
+                                    String name = teamField.get("name").asText();
+                                    options.add(new Option(name, id));
+                                }
                             }
                         }
+                        LOGGER.log(Level.INFO, "Loaded " + options.size() + " teams for query: " + query);
                     } catch (Exception e) {
-                        LOGGER.log(Level.WARNING, "Error parsing Jira teams: " + e.getMessage());
+                        LOGGER.log(Level.WARNING, "Error parsing Jira teams fallback: " + e.getMessage());
                     }
-                    return options;
+                    return new ArrayList<>(options); // Convert back to List
                 });
     }
 
@@ -169,6 +180,20 @@ public class SlackOptionsController {
         Option(String label, String value) {
             this.label = label;
             this.value = value;
+        }
+
+        // For Set uniqueness (based on ID)
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            Option option = (Option) o;
+            return value.equals(option.value);
+        }
+
+        @Override
+        public int hashCode() {
+            return value.hashCode();
         }
     }
 }
